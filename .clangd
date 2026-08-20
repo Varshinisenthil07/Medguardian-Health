@@ -1,0 +1,10 @@
+CompileFlags:
+  Add:
+    - "-xc++"
+    - "-std=c++17"
+    - "-DARDUINO=10800"
+    - "-DARDUINO_ARCH_ESP32"
+    - "-w"
+
+Diagnostics:
+  Suppress: "*"
