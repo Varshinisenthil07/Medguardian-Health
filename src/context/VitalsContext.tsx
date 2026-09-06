@@ -81,6 +81,9 @@ export const VitalsProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const thresholdsRef = React.useRef(thresholds);
   thresholdsRef.current = thresholds;
 
+  // Deduplication & Silence Cooldown Tracker for Alerts
+  const lastAlertTimestampRef = React.useRef<Map<string, number>>(new Map());
+
   // Ingestion handler for incoming vitals (from SSE, REST polling, or Simulator)
   const processIncomingVital = useCallback((data: StreamVitalMessage) => {
     const pId = data.patientId || 'P001';
@@ -144,25 +147,58 @@ export const VitalsProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       setHistory(prev => [...prev.slice(-499), historyEntry]);
     }
 
-    // Handle Alerts
+    // Handle Alerts with strict deduplication to prevent alarm fatigue
     if (evaluation.alerts.length > 0) {
       const patientName = patientsRef.current.find(p => p.patientId === pId)?.patientName || `Patient ${pId}`;
-      const newAlertItems: AlertItem[] = evaluation.alerts.map(a => ({
-        id: `alert-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-        patientId: pId,
-        patientName,
-        vitalType: a.vitalType,
-        severity: a.severity,
-        value: a.value,
-        message: a.message,
-        timestamp: nowStr
-      }));
+      const nowMs = Date.now();
 
-      setAlerts(prev => [...newAlertItems, ...prev].slice(0, 100));
+      setAlerts(prev => {
+        const toAdd: AlertItem[] = [];
 
-      const criticalAlert = newAlertItems.find(a => a.severity === 'CRITICAL');
-      if (criticalAlert) {
-        setActiveEmergencyAlert(criticalAlert);
+        for (const a of evaluation.alerts) {
+          const alertKey = `${pId}:${a.vitalType}:${a.severity}`;
+          const lastTime = lastAlertTimestampRef.current.get(alertKey) || 0;
+          const existingUnack = prev.find(item => item.patientId === pId && item.vitalType === a.vitalType && !item.acknowledged);
+
+          // Add alert only if no active unacknowledged alert exists AND > 45s since last identical alert
+          if (!existingUnack && (nowMs - lastTime > 45000)) {
+            lastAlertTimestampRef.current.set(alertKey, nowMs);
+            toAdd.push({
+              id: `alert-${nowMs}-${Math.random().toString(36).substr(2, 4)}`,
+              patientId: pId,
+              patientName,
+              vitalType: a.vitalType,
+              severity: a.severity,
+              value: a.value,
+              message: a.message,
+              timestamp: nowStr
+            });
+          }
+        }
+
+        if (toAdd.length === 0) return prev;
+        return [...toAdd, ...prev].slice(0, 100);
+      });
+
+      // Handle Emergency Modal Popup (60s cooldown on dismissal)
+      const criticalEval = evaluation.alerts.find(a => a.severity === 'CRITICAL');
+      if (criticalEval) {
+        const modalKey = `modal:${pId}:${criticalEval.vitalType}`;
+        const lastModalTime = lastAlertTimestampRef.current.get(modalKey) || 0;
+
+        if (nowMs - lastModalTime > 60000) {
+          lastAlertTimestampRef.current.set(modalKey, nowMs);
+          setActiveEmergencyAlert({
+            id: `alert-${nowMs}-${Math.random().toString(36).substr(2, 4)}`,
+            patientId: pId,
+            patientName,
+            vitalType: criticalEval.vitalType,
+            severity: criticalEval.severity,
+            value: criticalEval.value,
+            message: criticalEval.message,
+            timestamp: nowStr
+          });
+        }
       }
     }
   }, []);
@@ -222,7 +258,13 @@ export const VitalsProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   }, []);
 
   const dismissEmergencyModal = useCallback(() => {
-    setActiveEmergencyAlert(null);
+    setActiveEmergencyAlert(prev => {
+      if (prev) {
+        const modalKey = `modal:${prev.patientId}:${prev.vitalType}`;
+        lastAlertTimestampRef.current.set(modalKey, Date.now());
+      }
+      return null;
+    });
   }, []);
 
   // Hardware device timeout check (every 3s)
