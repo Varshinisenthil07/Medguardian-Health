@@ -68,14 +68,14 @@ String getPatientID() {
 // =====================================================================================
 // HARDWARE PIN ASSIGNMENTS & SENSOR OBJECTS
 // =====================================================================================
-#define ONE_WIRE_BUS 4 // DS18B20 Data Pin (GPIO 4)
-#define SDA_PIN 21      // MAX30102 SDA Pin (GPIO 21)
-#define SCL_PIN 22      // MAX30102 SCL Pin (GPIO 22)
+#define ONE_WIRE_BUS 4  // DS18B20 Data Pin (GPIO 4)
+#define SDA_PIN 18       // MAX30102 SDA Pin (GPIO 18)
+#define SCL_PIN 19       // MAX30102 SCL Pin (GPIO 19)
 
 // Alarm Indicators & Silence Control Pins
-#define LED_PIN 18      // Alert LED (Glows HIGH on Critical Vitals)
-#define BUZZER_PIN 19   // Audible Alert Buzzer (Beeps HIGH on Critical Vitals)
-#define BUTTON_PIN 15   // Alarm Silence Button (INPUT_PULLUP)
+#define BUZZER_PIN 25    // Audible Alert Buzzer (GPIO 25)
+#define LED_PIN 26       // Alert LED (GPIO 26 through 220Ω resistor)
+#define BUTTON_PIN 27    // Alarm Silence Push Button (GPIO 27, INPUT_PULLUP)
 
 bool alarmMuted = false;
 
@@ -446,7 +446,7 @@ void setup() {
 
   Serial.println("Initializing MAX30102 Oximeter...");
   if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) {
-    Serial.println("[MAX30102 ERROR] Sensor not found! Check SDA (GPIO 21) & SCL (GPIO 22)");
+    Serial.println("[MAX30102 ERROR] Sensor not found! Check SDA (GPIO 18) & SCL (GPIO 19)");
   } else {
     particleSensor.setup(0x1F, 1, 2, 100, 411, 4096);
     particleSensor.setPulseAmplitudeRed(0x1F);
@@ -465,9 +465,11 @@ void setup() {
 
   Serial.println();
   Serial.println("MEDGUARDIAN ESP32 READY.");
-  Serial.println("Alert LED Pin   : GPIO 18");
-  Serial.println("Buzzer Pin      : GPIO 19");
-  Serial.println("Silence Button  : GPIO 15");
+  Serial.println("MAX30102 SDA Pin: GPIO 18");
+  Serial.println("MAX30102 SCL Pin: GPIO 19");
+  Serial.println("Buzzer Pin      : GPIO 25");
+  Serial.println("Alert LED Pin   : GPIO 26");
+  Serial.println("Silence Button  : GPIO 27");
   Serial.println("Current Active Patient: " + getPatientID());
   Serial.println("Each patient session duration: 2 MINUTES (120 seconds)");
   Serial.println("------------------------------------------");
