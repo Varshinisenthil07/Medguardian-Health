@@ -1,5 +1,5 @@
-const defaultPatients = [
-  {
+const patientMap: Record<string, any> = {
+  P001: {
     patientId: 'P001',
     patientName: 'Patient 001',
     age: 45,
@@ -15,7 +15,7 @@ const defaultPatients = [
     lastSeen: new Date().toISOString(),
     deviceId: 'esp32-vital-01'
   }
-];
+};
 
 export default async function handler(req: any, res: any) {
   res.setHeader('Content-Type', 'application/json');
@@ -28,7 +28,7 @@ export default async function handler(req: any, res: any) {
   }
 
   if (req.method === 'GET') {
-    return res.status(200).json(defaultPatients);
+    return res.status(200).json(Object.values(patientMap));
   }
 
   if (req.method === 'POST') {
@@ -57,6 +57,29 @@ export default async function handler(req: any, res: any) {
     }
 
     const isoStr = body.timestamp || new Date().toISOString();
+
+    const existing = patientMap[patientId] || {
+      patientId,
+      patientName: `Patient ${patientId.replace(/^P0*/, '') || patientId}`,
+      age: 40,
+      gender: 'Unspecified',
+      roomNumber: `Room-${patientId}`
+    };
+
+    const updatedPatient = {
+      ...existing,
+      heartRate: heart_rate,
+      spo2,
+      temperature,
+      status,
+      emergency,
+      deviceStatus: 'ONLINE',
+      timestamp: new Date().toLocaleTimeString('en-US'),
+      lastSeen: isoStr,
+      deviceId: device_id
+    };
+
+    patientMap[patientId] = updatedPatient;
 
     return res.status(200).json({
       success: true,
