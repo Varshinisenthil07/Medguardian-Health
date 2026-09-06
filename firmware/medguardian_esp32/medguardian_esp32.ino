@@ -72,6 +72,13 @@ String getPatientID() {
 #define SDA_PIN 21      // MAX30102 SDA Pin (GPIO 21)
 #define SCL_PIN 22      // MAX30102 SCL Pin (GPIO 22)
 
+// Alarm Indicators & Silence Control Pins
+#define LED_PIN 18      // Alert LED (Glows HIGH on Critical Vitals)
+#define BUZZER_PIN 19   // Audible Alert Buzzer (Beeps HIGH on Critical Vitals)
+#define BUTTON_PIN 15   // Alarm Silence Button (INPUT_PULLUP)
+
+bool alarmMuted = false;
+
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature tempSensor(&oneWire);
 MAX30105 particleSensor;
@@ -378,6 +385,42 @@ bool sendVitalsPayload(float tempC, int32_t hr, int32_t oxygen, int remainingSec
 }
 
 // =====================================================================================
+// CRITICAL HARDWARE ALARM HELPER (LED + BUZZER + MUTE BUTTON)
+// =====================================================================================
+void checkAndTriggerHardwareAlarm(float tempC, int32_t hr, int32_t spo2) {
+  // Check if silence button on GPIO 15 is pressed (LOW when pressed)
+  if (digitalRead(BUTTON_PIN) == LOW) {
+    alarmMuted = true;
+    Serial.println("[HARDWARE ALARM] Silence Button Pressed! Muting alarm buzzer.");
+    delay(150);
+  }
+
+  // Evaluate critical status (SpO2 < 90%, HR < 50 or > 120, Temp > 38.0°C)
+  bool isCritical = false;
+  if (spo2 < 90 || hr < 50 || hr > 120 || tempC > 38.0f) {
+    isCritical = true;
+  } else {
+    alarmMuted = false; // Reset mute flag when vitals recover
+  }
+
+  if (isCritical) {
+    Serial.println("[HARDWARE ALARM] *** CRITICAL VITALS DETECTED *** Glowing LED & Beeping Buzzer!");
+    digitalWrite(LED_PIN, HIGH); // Glow Alert Red LED
+
+    if (!alarmMuted) {
+      digitalWrite(BUZZER_PIN, HIGH); // Sound Buzzer
+      delay(200);
+      digitalWrite(BUZZER_PIN, LOW);
+    } else {
+      digitalWrite(BUZZER_PIN, LOW);
+    }
+  } else {
+    digitalWrite(LED_PIN, LOW);
+    digitalWrite(BUZZER_PIN, LOW);
+  }
+}
+
+// =====================================================================================
 // SETUP
 // =====================================================================================
 void setup() {
@@ -388,6 +431,14 @@ void setup() {
   Serial.println("==========================================");
   Serial.println("  MEDGUARDIAN 2-MIN TIMED PATIENT GATEWAY ");
   Serial.println("==========================================");
+
+  // Configure Alarm & Button Pins
+  pinMode(LED_PIN, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+
+  digitalWrite(LED_PIN, LOW);
+  digitalWrite(BUZZER_PIN, LOW);
 
   ensureWiFiConnected();
 
@@ -414,6 +465,9 @@ void setup() {
 
   Serial.println();
   Serial.println("MEDGUARDIAN ESP32 READY.");
+  Serial.println("Alert LED Pin   : GPIO 18");
+  Serial.println("Buzzer Pin      : GPIO 19");
+  Serial.println("Silence Button  : GPIO 15");
   Serial.println("Current Active Patient: " + getPatientID());
   Serial.println("Each patient session duration: 2 MINUTES (120 seconds)");
   Serial.println("------------------------------------------");
@@ -436,6 +490,9 @@ void loop() {
   bool ppgValid = readMAX30102(heartRate, spo2Val);
 
   if (tempValid && ppgValid) {
+    // Check and trigger hardware LED / Buzzer alarm if vitals are critical
+    checkAndTriggerHardwareAlarm(temperature, heartRate, spo2Val);
+
     // Start 2-minute timer when finger is first detected
     if (!sessionActive) {
       sessionStartMs = millis();
@@ -482,6 +539,9 @@ void loop() {
       patientNumber++; // P001 -> P002 -> P003...
       sessionActive = false;
       fingerWasPresent = false;
+      digitalWrite(LED_PIN, LOW);
+      digitalWrite(BUZZER_PIN, LOW);
+      alarmMuted = false;
 
       String nextPatient = getPatientID();
       Serial.println();
@@ -495,6 +555,11 @@ void loop() {
       sendLogMessage("SUCCESS", "2-Minute session finished for " + finishedPatient + ". Advanced to " + nextPatient);
     }
   } else {
+    // Turn off alarm indicators when finger is removed
+    digitalWrite(LED_PIN, LOW);
+    digitalWrite(BUZZER_PIN, LOW);
+    alarmMuted = false;
+
     // Finger was taken off before 2-minute timer finished
     if (sessionActive) {
       String prevPatient = getPatientID();
