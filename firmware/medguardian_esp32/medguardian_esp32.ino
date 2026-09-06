@@ -43,9 +43,9 @@ const char* WIFI_PASSWORD = "varshini";
 // Target Server Configuration
 // For Local LAN: USE_HTTPS = false, TARGET_DOMAIN = "172.16.111.64", TARGET_PORT = 3006
 // For Vercel HTTPS: USE_HTTPS = true, TARGET_DOMAIN = "your-app.vercel.app", TARGET_PORT = 443
-const bool  USE_HTTPS     = false; 
-const char* TARGET_DOMAIN = "172.16.111.64"; // Your Laptop IP or Vercel Domain
-const int   TARGET_PORT   = 3006;            // 3006 for local Express, 443 for Vercel
+const bool  USE_HTTPS     = true; 
+const char* TARGET_DOMAIN = "medguardianhealth.vercel.app"; // Your Vercel HTTPS Domain
+const int   TARGET_PORT   = 443;                           // 443 for HTTPS, 443 for Vercel
 const char* API_ENDPOINT  = "/api/vitals";
 
 const char* DEVICE_ID  = "esp32-vital-01";
@@ -263,33 +263,40 @@ void sendLogMessage(String level, String message) {
 
   HTTPClient http;
   String logUrl;
+  bool isHttps = USE_HTTPS || (String(TARGET_DOMAIN).indexOf("vercel.app") != -1);
 
-  if (USE_HTTPS) {
+  if (isHttps) {
     WiFiClientSecure client;
     client.setInsecure();
     logUrl = "https://" + String(TARGET_DOMAIN) + "/api/device/log";
     http.begin(client, logUrl);
+    http.addHeader("Content-Type", "application/json");
+    http.setTimeout(3000);
+
+    String escapedMsg = message;
+    escapedMsg.replace("\"", "\\\"");
+    String payload = "{\"device_id\":\"" + String(DEVICE_ID) +
+                     "\",\"patientId\":\"" + getPatientID() +
+                     "\",\"level\":\"" + level +
+                     "\",\"message\":\"" + escapedMsg + "\"}";
+    http.POST(payload);
+    http.end();
   } else {
     WiFiClient client;
     logUrl = "http://" + String(TARGET_DOMAIN) + ":" + String(TARGET_PORT) + "/api/device/log";
     http.begin(client, logUrl);
+    http.addHeader("Content-Type", "application/json");
+    http.setTimeout(3000);
+
+    String escapedMsg = message;
+    escapedMsg.replace("\"", "\\\"");
+    String payload = "{\"device_id\":\"" + String(DEVICE_ID) +
+                     "\",\"patientId\":\"" + getPatientID() +
+                     "\",\"level\":\"" + level +
+                     "\",\"message\":\"" + escapedMsg + "\"}";
+    http.POST(payload);
+    http.end();
   }
-
-  http.addHeader("Content-Type", "application/json");
-  http.setTimeout(2000);
-
-  String escapedMsg = message;
-  escapedMsg.replace("\"", "\\\"");
-
-  String currentPatient = getPatientID();
-
-  String payload = "{\"device_id\":\"" + String(DEVICE_ID) +
-                   "\",\"patientId\":\"" + currentPatient +
-                   "\",\"level\":\"" + level +
-                   "\",\"message\":\"" + escapedMsg + "\"}";
-
-  http.POST(payload);
-  http.end();
 }
 
 // =====================================================================================
@@ -303,20 +310,7 @@ bool sendVitalsPayload(float tempC, int32_t hr, int32_t oxygen, int remainingSec
 
   HTTPClient http;
   String fullUrl;
-
-  if (USE_HTTPS) {
-    WiFiClientSecure client;
-    client.setInsecure();
-    fullUrl = "https://" + String(TARGET_DOMAIN) + String(API_ENDPOINT);
-    http.begin(client, fullUrl);
-  } else {
-    WiFiClient client;
-    fullUrl = "http://" + String(TARGET_DOMAIN) + ":" + String(TARGET_PORT) + String(API_ENDPOINT);
-    http.begin(client, fullUrl);
-  }
-
-  http.addHeader("Content-Type", "application/json");
-  http.setTimeout(4000);
+  bool isHttps = USE_HTTPS || (String(TARGET_DOMAIN).indexOf("vercel.app") != -1);
 
   String currentPatient = getPatientID();
 
@@ -328,13 +322,37 @@ bool sendVitalsPayload(float tempC, int32_t hr, int32_t oxygen, int remainingSec
   jsonPayload += "\"temperature\":" + String(tempC, 2);
   jsonPayload += "}";
 
-  Serial.println("------------------------------------------");
-  Serial.print("Target URL: ");
-  Serial.println(fullUrl);
-  Serial.print("Payload   : ");
-  Serial.println(jsonPayload);
+  int httpCode = -1;
 
-  int httpCode = http.POST(jsonPayload);
+  if (isHttps) {
+    WiFiClientSecure client;
+    client.setInsecure(); // Standard TLS bypass for dynamic hosts
+    fullUrl = "https://" + String(TARGET_DOMAIN) + String(API_ENDPOINT);
+
+    Serial.println("------------------------------------------");
+    Serial.print("Target URL: ");
+    Serial.println(fullUrl);
+    Serial.print("Payload   : ");
+    Serial.println(jsonPayload);
+
+    http.begin(client, fullUrl);
+    http.addHeader("Content-Type", "application/json");
+    http.setTimeout(5000);
+    httpCode = http.POST(jsonPayload);
+  } else {
+    WiFiClient client;
+    fullUrl = "http://" + String(TARGET_DOMAIN) + ":" + String(TARGET_PORT) + String(API_ENDPOINT);
+
+    Serial.println("------------------------------------------");
+    Serial.print("Target URL: ");
+    Serial.println(fullUrl);
+    Serial.print("Payload   : ");
+    Serial.println(jsonPayload);
+
+    http.begin(client, fullUrl);
+    http.addHeader("Content-Type", "application/json");
+    http.setTimeout(5000);
+    httpCode = http.POST(jsonPayload);
   Serial.print("HTTP Code : ");
   Serial.println(httpCode);
 
