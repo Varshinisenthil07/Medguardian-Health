@@ -353,6 +353,8 @@ bool sendVitalsPayload(float tempC, int32_t hr, int32_t oxygen, int remainingSec
     http.addHeader("Content-Type", "application/json");
     http.setTimeout(5000);
     httpCode = http.POST(jsonPayload);
+  }
+
   Serial.print("HTTP Code : ");
   Serial.println(httpCode);
 
