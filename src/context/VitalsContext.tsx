@@ -85,7 +85,7 @@ export const VitalsProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const lastAlertTimestampRef = React.useRef<Map<string, number>>(new Map());
 
   // Ingestion handler for incoming vitals (from SSE, REST polling, or Simulator)
-  const processIncomingVital = useCallback((data: StreamVitalMessage) => {
+  const processIncomingVital = useCallback((data: StreamVitalMessage, autoSelect: boolean = true) => {
     const pId = data.patientId || 'P001';
     const hr = data.heartRate;
     const spo2 = data.spo2;
@@ -127,7 +127,9 @@ export const VitalsProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
     if (!isSim && hr !== null) {
       setLastHardwarePayloadReceived(new Date(isoStr));
-      setSelectedPatientId(pId);
+      if (autoSelect) {
+        setSelectedPatientId(pId);
+      }
     }
 
     // Append to History if values exist
@@ -299,8 +301,18 @@ export const VitalsProvider: React.FC<{ children: ReactNode }> = ({ children }) 
           .then(initialPatients => {
             if (initialPatients && initialPatients.length > 0) {
               setServerConnected(true);
+
+              let activePatientId: string | null = null;
+              let latestTime = 0;
+
               initialPatients.forEach(p => {
                 if (p.heartRate !== null) {
+                  const pTime = p.lastSeen ? new Date(p.lastSeen).getTime() : 0;
+                  if (pTime > latestTime) {
+                    latestTime = pTime;
+                    activePatientId = p.patientId;
+                  }
+
                   processIncomingVital({
                     patientId: p.patientId,
                     heartRate: p.heartRate,
@@ -311,9 +323,13 @@ export const VitalsProvider: React.FC<{ children: ReactNode }> = ({ children }) 
                     timestamp: p.timestamp,
                     lastSeen: p.lastSeen || new Date().toISOString(),
                     source: 'ESP32 REAL SENSOR'
-                  });
+                  }, false);
                 }
               });
+
+              if (activePatientId && latestTime > 0) {
+                setSelectedPatientId(activePatientId);
+              }
             }
           })
           .catch(err => {
