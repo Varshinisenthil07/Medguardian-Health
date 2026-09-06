@@ -69,15 +69,15 @@ export function analyzePatientVitals(
   // Temperature analysis
   if (patient.temperature > config.tempWarnMax) {
     if (riskLevel !== 'CRITICAL') riskLevel = 'HIGH';
-    insights.push(`High fever detected: Core temperature is ${patient.temperature} °C (Threshold >${config.tempWarnMax} °C).`);
+    insights.push(`High fever detected: Surface reading is ${patient.temperature} °C (Threshold >${config.tempWarnMax} °C).`);
   } else if (patient.temperature < config.tempLowWarn) {
     if (riskLevel !== 'CRITICAL') riskLevel = 'HIGH';
-    insights.push(`Hypothermia alert: Core temperature is ${patient.temperature} °C (Threshold <${config.tempLowWarn} °C).`);
+    insights.push(`Sensor Out-of-Bounds: DS18B20 reading is ${patient.temperature} °C (Threshold <${config.tempLowWarn} °C).`);
   } else if (patient.temperature > config.tempNormalMax) {
     if (riskLevel === 'LOW') riskLevel = 'MODERATE';
-    insights.push(`Mild fever present: Core temperature is ${patient.temperature} °C.`);
+    insights.push(`Elevated surface temperature: DS18B20 reading is ${patient.temperature} °C.`);
   } else {
-    insights.push(`Temperature (${patient.temperature} °C) is within normothermic range (${config.tempNormalMin} - ${config.tempNormalMax} °C).`);
+    insights.push(`DS18B20 Temperature (${patient.temperature} °C) is within normal prototype sensor range (${config.tempNormalMin} - ${config.tempNormalMax} °C).`);
   }
 
   // Combined risk summary & recommendations

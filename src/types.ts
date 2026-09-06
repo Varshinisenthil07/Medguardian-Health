@@ -17,8 +17,11 @@ export interface DeviceLog {
 }
 
 export interface VitalPayload {
+  deviceId?: string;
+  device_id?: string;
   patientId: string;
-  heartRate: number;
+  heartRate?: number;
+  heart_rate?: number;
   spo2: number;
   temperature: number;
 }

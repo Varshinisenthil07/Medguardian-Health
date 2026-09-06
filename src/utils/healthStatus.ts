@@ -1,18 +1,18 @@
 import { ThresholdsConfig, VitalStatus, AlertItem } from '../types';
 
 export const DEFAULT_THRESHOLDS: ThresholdsConfig = {
-  hrLowWarn: 50,
-  hrNormalMin: 60,
+  hrLowWarn: 40,        // Adjusted for resting heart rate & prototype PPG variance
+  hrNormalMin: 50,      // Resting baseline min
   hrNormalMax: 100,
-  hrWarnMax: 120,
+  hrWarnMax: 130,
 
-  spo2NormalMin: 95,
-  spo2WarnMin: 90,
+  spo2NormalMin: 90,
+  spo2WarnMin: 80,
 
-  tempLowWarn: 35.0,
-  tempNormalMin: 36.0,
+  tempLowWarn: 20.0,    // Adjusted for prototype DS18B20 skin/ambient surface readings
+  tempNormalMin: 25.0,  // Skin surface contact baseline
   tempNormalMax: 37.5,
-  tempWarnMax: 38.0,
+  tempWarnMax: 38.5,
 
   deviceTimeoutSec: 15
 };
@@ -44,7 +44,7 @@ export function evaluateSpO2(spo2: number, config: ThresholdsConfig = DEFAULT_TH
     return { status: 'CRITICAL', message: `Critical Oxygen Saturation: ${spo2}% (Threshold <${config.spo2WarnMin}%)`, isEmergency: true };
   }
   if (spo2 >= config.spo2WarnMin && spo2 < config.spo2NormalMin) {
-    return { status: 'WARNING', message: `Low Oxygen Saturation: ${spo2}%`, isEmergency: false };
+    return { status: 'WARNING', message: `Low Oxygen Saturation: ${spo2}% (Prototype Contact Warning)`, isEmergency: false };
   }
   return { status: 'STABLE', message: 'SpO2 Normal', isEmergency: false };
 }
@@ -54,12 +54,12 @@ export function evaluateTemperature(temp: number, config: ThresholdsConfig = DEF
     return { status: 'CRITICAL', message: `High Fever: ${temp} °C (Threshold >${config.tempWarnMax} °C)`, isEmergency: true };
   }
   if (temp < config.tempLowWarn) {
-    return { status: 'CRITICAL', message: `Hypothermia Risk: ${temp} °C (Threshold <${config.tempLowWarn} °C)`, isEmergency: true };
+    return { status: 'CRITICAL', message: `Sensor Out-of-Bounds: ${temp} °C (Threshold <${config.tempLowWarn} °C)`, isEmergency: true };
   }
   if (temp > config.tempNormalMax && temp <= config.tempWarnMax) {
-    return { status: 'WARNING', message: `Mild Fever: ${temp} °C`, isEmergency: false };
+    return { status: 'WARNING', message: `Elevated Temperature: ${temp} °C`, isEmergency: false };
   }
-  return { status: 'STABLE', message: 'Temperature Normal', isEmergency: false };
+  return { status: 'STABLE', message: 'Temperature Normal (Prototype DS18B20 Surface Reading)', isEmergency: false };
 }
 
 export function evaluatePatientStatus(

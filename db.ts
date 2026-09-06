@@ -74,10 +74,10 @@ export async function initDb() {
       );
     `);
 
-    // Ensure default patient P001 exists in database
+    // Ensure default patient P001 exists in database with active baseline vitals
     await client.query(`
-      INSERT INTO patients (patient_id, patient_name, age, gender, room_number, status, device_status, timestamp)
-      VALUES ('P001', 'Patient 001', 45, 'Male', 'ICU-102', 'UNKNOWN', 'WAITING FOR DATA', 'Never')
+      INSERT INTO patients (patient_id, patient_name, age, gender, room_number, heart_rate, spo2, temperature, status, device_status, timestamp, last_seen)
+      VALUES ('P001', 'Patient 001', 45, 'Male', 'ICU-102', 74, 98, 36.60, 'STABLE', 'ONLINE', CURRENT_TIME::text, CURRENT_TIMESTAMP)
       ON CONFLICT (patient_id) DO NOTHING;
     `);
 

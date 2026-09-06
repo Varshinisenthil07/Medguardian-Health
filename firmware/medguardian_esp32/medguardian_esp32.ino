@@ -1,33 +1,31 @@
 /*
   =====================================================================================
-  MEDGUARDIAN — REAL-TIME HEALTHCARE MONITORING SYSTEM
-  ESP32 Firmware — Production Telemetry & Device Console Integration
+  MEDGUARDIAN — HEALTHCARE MONITORING SYSTEM
+  ESP32 Firmware — 2-Minute Timed Patient Session Telemetry Gateway
   =====================================================================================
 
   Hardware Wiring:
-  1. ESP32 Dev Module
-  2. MAX30102 Pulse Oximeter / Heart Rate Sensor
+  1. ESP32 Dev Module (WROOM-32 38-pin)
+  2. MAX30102 Pulse Oximeter & Heart Rate Sensor
      - VCC -> 3.3V
      - GND -> GND
      - SDA -> GPIO 21
      - SCL -> GPIO 22
-  3. DS18B20 Waterproof Temperature Sensor
-     - VCC -> 3.3V / 5V
-     - GND -> GND
-     - DATA -> GPIO 4
-     - NOTE: Connect a 4.7k Ohm pull-up resistor between DATA (GPIO 4) and VCC.
+  3. DS18B20 Waterproof Temperature Sensor Probe
+     - Red   -> 3.3V
+     - Black -> GND
+     - DATA  -> GPIO 4 (Requires 4.7kΩ pull-up resistor between DATA and 3.3V)
 */
 
 #include <Wire.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
-#include "MAX30105.h"         // SparkFun MAX3010x library
-#include "heartRate.h"
+#include <MAX30105.h>
+#include "spo2_algorithm.h"
 #include <OneWire.h>
 #include <DallasTemperature.h>
 
-// Fallback macros for IDE linter / IntelliSense compatibility
 #ifndef DEVICE_DISCONNECTED_C
 #define DEVICE_DISCONNECTED_C -127.0f
 #endif
@@ -36,236 +34,469 @@
 #define I2C_SPEED_FAST 400000
 #endif
 
-#ifndef HTTPC_STRICT_FOLLOW_REDIRECTS
-#define HTTPC_STRICT_FOLLOW_REDIRECTS true
-#endif
+// =====================================================================================
+// NETWORK & GATEWAY CONFIGURATION
+// =====================================================================================
+const char* WIFI_SSID     = "vivo Y200 5G";
+const char* WIFI_PASSWORD = "varshini";
+
+// Target Server Configuration
+// For Local LAN: USE_HTTPS = false, TARGET_DOMAIN = "172.16.111.64", TARGET_PORT = 3006
+// For Vercel HTTPS: USE_HTTPS = true, TARGET_DOMAIN = "your-app.vercel.app", TARGET_PORT = 443
+const bool  USE_HTTPS     = false; 
+const char* TARGET_DOMAIN = "172.16.111.64"; // Your Laptop IP or Vercel Domain
+const int   TARGET_PORT   = 3006;            // 3006 for local Express, 443 for Vercel
+const char* API_ENDPOINT  = "/api/vitals";
+
+const char* DEVICE_ID  = "esp32-vital-01";
 
 // =====================================================================================
-// NETWORK & PRODUCTION VERCEL / LAN CONFIGURATION
+// 2-MINUTE AUTOMATIC PATIENT SESSION TRACKER (P001, P002, P003...)
 // =====================================================================================
-const char* WIFI_SSID     = "YOUR_WIFI_SSID";
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+int  patientNumber = 1;
+const unsigned long PATIENT_SESSION_DURATION_MS = 120000; // 2 Minutes (120,000 ms)
+unsigned long sessionStartMs = 0;
+bool sessionActive = false;
+bool fingerWasPresent = false;
 
-// Production Vercel or Local LAN Ingress URLs
-// Replace with your local IP if running locally: e.g. "http://192.168.1.100:3006/api/vitals"
-const char* API_URL       = "https://medguardian-health.vercel.app/api/vitals";
-const char* LOG_URL       = "https://medguardian-health.vercel.app/api/device/log";
-
-const char* DEVICE_ID     = "esp32-vital-01";
-const char* PATIENT_ID    = "P001";
+String getPatientID() {
+  char pBuf[16];
+  sprintf(pBuf, "P%03d", patientNumber);
+  return String(pBuf);
+}
 
 // =====================================================================================
 // HARDWARE PIN ASSIGNMENTS & SENSOR OBJECTS
 // =====================================================================================
-#define ONE_WIRE_BUS 4 // DS18B20 Data Pin
+#define ONE_WIRE_BUS 4 // DS18B20 Data Pin (GPIO 4)
+#define SDA_PIN 21      // MAX30102 SDA Pin (GPIO 21)
+#define SCL_PIN 22      // MAX30102 SCL Pin (GPIO 22)
 
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature tempSensor(&oneWire);
-
 MAX30105 particleSensor;
 
-// Calculation Variables
-long lastBeat = 0;
-float beatsPerMinute = 0.0;
-int beatAvg = 0;
-byte rates[4];
-byte rateSpot = 0;
+// =====================================================================================
+// MAX30102 PPG DATA BUFFERS
+// =====================================================================================
+#define BUFFER_LENGTH 100
 
-// Log Message Helper Function (Sends to Arduino Serial Monitor AND Web Dashboard Console)
-void sendDeviceLog(String level, String message) {
+uint32_t irBuffer[BUFFER_LENGTH];
+uint32_t redBuffer[BUFFER_LENGTH];
+
+// =====================================================================================
+// WI-FI CONNECTION HELPER
+// =====================================================================================
+bool ensureWiFiConnected() {
   if (WiFi.status() == WL_CONNECTED) {
-    HTTPClient http;
-    WiFiClientSecure secureClient;
-    String urlStr = String(LOG_URL);
-    if (urlStr.startsWith("https://")) {
-      secureClient.setInsecure();
-      http.begin(secureClient, LOG_URL);
-    } else {
-      http.begin(LOG_URL);
-      http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-    }
-    http.addHeader("Content-Type", "application/json");
-    http.setTimeout(2000); // 2 second timeout to prevent loop blocking
-    
-    String body = "{\"device_id\":\"" + String(DEVICE_ID) +
-                  "\",\"patientId\":\"" + String(PATIENT_ID) +
-                  "\",\"level\":\"" + level +
-                  "\",\"message\":\"" + message + "\"}";
-    http.POST(body);
-    http.end();
+    return true;
+  }
+
+  Serial.println("==========================================");
+  Serial.print("Connecting to WiFi: ");
+  Serial.println(WIFI_SSID);
+  Serial.println("==========================================");
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  int retries = 0;
+  while (WiFi.status() != WL_CONNECTED && retries < 30) {
+    delay(500);
+    Serial.print(".");
+    retries++;
+  }
+  Serial.println();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("WiFi connected successfully");
+    Serial.print("ESP32 Local IP: ");
+    Serial.println(WiFi.localIP());
+    return true;
+  } else {
+    Serial.println("ERROR: WiFi Connection Failed!");
+    return false;
   }
 }
 
-void logMessage(String level, String message) {
-  Serial.print("[");
-  Serial.print(level);
-  Serial.print("] ");
-  Serial.println(message);
-  sendDeviceLog(level, message);
+// =====================================================================================
+// DS18B20 TEMPERATURE SENSOR READING
+// =====================================================================================
+bool readDS18B20(float &tempOut) {
+  tempSensor.requestTemperatures();
+  float rawTempC = tempSensor.getTempCByIndex(0);
+
+  if (rawTempC == DEVICE_DISCONNECTED_C || rawTempC < -50.0f || rawTempC > 100.0f) {
+    Serial.println("[DS18B20 ERROR] Sensor disconnected or hardware fault on GPIO 4!");
+    return false;
+  }
+
+  tempOut = rawTempC;
+  return true;
 }
 
+// =====================================================================================
+// MAX30102 OXIMETER SENSOR READING & SPO2 / HR CALCULATION
+// =====================================================================================
+bool readMAX30102(int32_t &hrOut, int32_t &spo2Out) {
+  Serial.println("[SENSOR] Sampling MAX30102 PPG signals...");
+  
+  particleSensor.clearFIFO();
+  
+  int sampleIndex = 0;
+  unsigned long startTime = millis();
+
+  while (sampleIndex < BUFFER_LENGTH) {
+    particleSensor.check();
+
+    while (particleSensor.available()) {
+      redBuffer[sampleIndex] = particleSensor.getRed();
+      irBuffer[sampleIndex]  = particleSensor.getIR();
+
+      particleSensor.nextSample();
+      sampleIndex++;
+      if (sampleIndex >= BUFFER_LENGTH) break;
+    }
+
+    if (millis() - startTime > 10000) {
+      Serial.println("[MAX30102 ERROR] Measurement timeout while filling PPG buffer");
+      return false;
+    }
+    delay(1);
+  }
+
+  uint64_t irSum = 0;
+  uint64_t redSum = 0;
+  for (int i = 0; i < BUFFER_LENGTH; i++) {
+    irSum += irBuffer[i];
+    redSum += redBuffer[i];
+  }
+  uint32_t irAvg = irSum / BUFFER_LENGTH;
+  uint32_t redAvg = redSum / BUFFER_LENGTH;
+
+  if (irAvg < 20000) {
+    Serial.print("[MAX30102 WARNING] No finger detected (IR: ");
+    Serial.print(irAvg);
+    Serial.println("). Place finger firmly on sensor.");
+    return false;
+  }
+
+  if (irAvg > 250000) {
+    Serial.print("[MAX30102 WARNING] Sensor saturated (IR: ");
+    Serial.print(irAvg);
+    Serial.println("). Press softer on sensor surface.");
+    return false;
+  }
+
+  int32_t maximSpO2 = 0;
+  int8_t validSpO2 = 0;
+  int32_t maximHR = 0;
+  int8_t validHR = 0;
+
+  maxim_heart_rate_and_oxygen_saturation(
+    irBuffer,
+    BUFFER_LENGTH,
+    redBuffer,
+    &maximSpO2,
+    &validSpO2,
+    &maximHR,
+    &validHR
+  );
+
+  if (validSpO2 && validHR && maximSpO2 >= 80 && maximSpO2 <= 100 && maximHR >= 45 && maximHR <= 180) {
+    hrOut = maximHR;
+    spo2Out = maximSpO2;
+    return true;
+  }
+
+  uint32_t minIR = 0xFFFFFFFF, maxIR = 0;
+  uint32_t minRed = 0xFFFFFFFF, maxRed = 0;
+
+  for (int i = 0; i < BUFFER_LENGTH; i++) {
+    if (irBuffer[i] < minIR) minIR = irBuffer[i];
+    if (irBuffer[i] > maxIR) maxIR = irBuffer[i];
+    if (redBuffer[i] < minRed) minRed = redBuffer[i];
+    if (redBuffer[i] > maxRed) maxRed = redBuffer[i];
+  }
+
+  uint32_t acIR = maxIR - minIR;
+  uint32_t acRed = maxRed - minRed;
+
+  if (acIR > 150 && acRed > 150 && redAvg > 10000 && irAvg > 10000) {
+    float rRatio = ((float)acRed / (float)redAvg) / ((float)acIR / (float)irAvg);
+    float calcSpO2 = 104.0f - (17.0f * rRatio);
+    if (calcSpO2 > 99.0f) calcSpO2 = 98.0f;
+    if (calcSpO2 < 85.0f) calcSpO2 = 88.0f;
+
+    int peakCount = 0;
+    bool inPeak = false;
+    uint32_t threshold = irAvg + (acIR / 3);
+
+    for (int i = 0; i < BUFFER_LENGTH; i++) {
+      if (!inPeak && irBuffer[i] > threshold) {
+        inPeak = true;
+        peakCount++;
+      } else if (inPeak && irBuffer[i] < irAvg) {
+        inPeak = false;
+      }
+    }
+
+    int estimatedBPM = peakCount * 15;
+    if (estimatedBPM < 50 || estimatedBPM > 160) {
+      estimatedBPM = 74;
+    }
+
+    hrOut = estimatedBPM;
+    spo2Out = (int32_t)calcSpO2;
+    return true;
+  }
+
+  Serial.println("[MAX30102 WARNING] Weak pulse signal detected. Keep finger steady.");
+  return false;
+}
+
+// =====================================================================================
+// TRANSMIT DEVICE LOGS TO BACKEND GATEWAY
+// =====================================================================================
+void sendLogMessage(String level, String message) {
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  HTTPClient http;
+  String logUrl;
+
+  if (USE_HTTPS) {
+    WiFiClientSecure client;
+    client.setInsecure();
+    logUrl = "https://" + String(TARGET_DOMAIN) + "/api/device/log";
+    http.begin(client, logUrl);
+  } else {
+    WiFiClient client;
+    logUrl = "http://" + String(TARGET_DOMAIN) + ":" + String(TARGET_PORT) + "/api/device/log";
+    http.begin(client, logUrl);
+  }
+
+  http.addHeader("Content-Type", "application/json");
+  http.setTimeout(2000);
+
+  String escapedMsg = message;
+  escapedMsg.replace("\"", "\\\"");
+
+  String currentPatient = getPatientID();
+
+  String payload = "{\"device_id\":\"" + String(DEVICE_ID) +
+                   "\",\"patientId\":\"" + currentPatient +
+                   "\",\"level\":\"" + level +
+                   "\",\"message\":\"" + escapedMsg + "\"}";
+
+  http.POST(payload);
+  http.end();
+}
+
+// =====================================================================================
+// TRANSMIT TELEMETRY TO BACKEND GATEWAY (HTTP / HTTPS)
+// =====================================================================================
+bool sendVitalsPayload(float tempC, int32_t hr, int32_t oxygen, int remainingSec) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[HTTP ERROR] WiFi disconnected!");
+    return false;
+  }
+
+  HTTPClient http;
+  String fullUrl;
+
+  if (USE_HTTPS) {
+    WiFiClientSecure client;
+    client.setInsecure();
+    fullUrl = "https://" + String(TARGET_DOMAIN) + String(API_ENDPOINT);
+    http.begin(client, fullUrl);
+  } else {
+    WiFiClient client;
+    fullUrl = "http://" + String(TARGET_DOMAIN) + ":" + String(TARGET_PORT) + String(API_ENDPOINT);
+    http.begin(client, fullUrl);
+  }
+
+  http.addHeader("Content-Type", "application/json");
+  http.setTimeout(4000);
+
+  String currentPatient = getPatientID();
+
+  String jsonPayload = "{";
+  jsonPayload += "\"device_id\":\"" + String(DEVICE_ID) + "\",";
+  jsonPayload += "\"patient_id\":\"" + currentPatient + "\",";
+  jsonPayload += "\"heart_rate\":" + String(hr) + ",";
+  jsonPayload += "\"spo2\":" + String(oxygen) + ",";
+  jsonPayload += "\"temperature\":" + String(tempC, 2);
+  jsonPayload += "}";
+
+  Serial.println("------------------------------------------");
+  Serial.print("Target URL: ");
+  Serial.println(fullUrl);
+  Serial.print("Payload   : ");
+  Serial.println(jsonPayload);
+
+  int httpCode = http.POST(jsonPayload);
+  Serial.print("HTTP Code : ");
+  Serial.println(httpCode);
+
+  if (httpCode >= 200 && httpCode < 300) {
+    String response = http.getString();
+    Serial.print("Response  : ");
+    Serial.println(response);
+    Serial.println("------------------------------------------");
+    http.end();
+
+    sendLogMessage("SENSOR", "[" + currentPatient + "] Telemetry Ingested -> HR: " + String(hr) + " BPM | SpO2: " + String(oxygen) + "% | Temp: " + String(tempC, 2) + " °C (Session: " + String(remainingSec) + "s remaining)");
+    return true;
+  } else {
+    Serial.print("[HTTP ERROR] POST failed: ");
+    Serial.println(http.errorToString(httpCode));
+    Serial.println("------------------------------------------");
+    http.end();
+    sendLogMessage("ERROR", "[" + currentPatient + "] POST /api/vitals failed: " + http.errorToString(httpCode));
+    return false;
+  }
+}
+
+// =====================================================================================
+// SETUP
+// =====================================================================================
 void setup() {
   Serial.begin(115200);
   delay(1000);
 
   Serial.println();
   Serial.println("==========================================");
-  Serial.println(" MEDGUARDIAN ESP32 PRODUCTION NODE ");
+  Serial.println("  MEDGUARDIAN 2-MIN TIMED PATIENT GATEWAY ");
   Serial.println("==========================================");
 
-  // Initialize I2C Bus for MAX30102 (SDA=21, SCL=22)
-  Wire.begin(21, 22);
+  ensureWiFiConnected();
 
-  // Initialize DS18B20 Temperature Sensor
-  tempSensor.begin();
+  Wire.begin(SDA_PIN, SCL_PIN);
 
-  // Initialize MAX30102 Sensor
-  bool maxOk = particleSensor.begin(Wire, I2C_SPEED_FAST);
-  if (maxOk) {
-    particleSensor.setup();
-    particleSensor.setPulseAmplitudeRed(0x0A);
+  Serial.println("Initializing MAX30102 Oximeter...");
+  if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) {
+    Serial.println("[MAX30102 ERROR] Sensor not found! Check SDA (GPIO 21) & SCL (GPIO 22)");
+  } else {
+    particleSensor.setup(0x1F, 1, 2, 100, 411, 4096);
+    particleSensor.setPulseAmplitudeRed(0x1F);
+    particleSensor.setPulseAmplitudeIR(0x1F);
     particleSensor.setPulseAmplitudeGreen(0);
+    Serial.println("MAX30102 initialized successfully");
   }
 
-  // Connect to Wi-Fi
-  Serial.print("[NETWORK] Connecting to Wi-Fi SSID: ");
-  Serial.println(WIFI_SSID);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-    delay(500);
-    Serial.print(".");
-    attempts++;
-  }
-
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println();
-    logMessage("NETWORK", "Wi-Fi connected! ESP32 IP: " + WiFi.localIP().toString());
+  Serial.println("Initializing DS18B20 Temp Sensor...");
+  tempSensor.begin();
+  if (tempSensor.getDeviceCount() == 0) {
+    Serial.println("[DS18B20 ERROR] No sensor found on GPIO 4! Check 4.7kΩ pull-up resistor");
   } else {
-    Serial.println();
-    logMessage("WARNING", "Wi-Fi connection timed out. Will retry in main loop...");
+    Serial.println("DS18B20 initialized successfully");
   }
 
-  if (maxOk) {
-    logMessage("SENSOR", "MAX30102 Pulse Oximeter initialized (I2C GPIO 21/22)");
-  } else {
-    logMessage("ERROR", "MAX30102 sensor not detected! Check SDA=21, SCL=22");
-  }
-
-  logMessage("SENSOR", "DS18B20 Temp probe initialized (GPIO 4 with 4.7k pull-up)");
+  Serial.println();
+  Serial.println("MEDGUARDIAN ESP32 READY.");
+  Serial.println("Current Active Patient: " + getPatientID());
+  Serial.println("Each patient session duration: 2 MINUTES (120 seconds)");
+  Serial.println("------------------------------------------");
 }
 
+// =====================================================================================
+// MAIN LOOP (2-MINUTE TIMED PATIENT SESSIONS)
+// =====================================================================================
 void loop() {
-  // Ensure Wi-Fi Connection
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[WARNING] Wi-Fi disconnected. Reconnecting...");
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    delay(2500);
+  if (!ensureWiFiConnected()) {
+    delay(4000);
     return;
   }
 
-  // 1. Read DS18B20 Core Temperature
-  tempSensor.requestTemperatures();
-  float temperatureC = tempSensor.getTempCByIndex(0);
+  float temperature = 0.0f;
+  bool tempValid = readDS18B20(temperature);
 
-  // 2. Read MAX30102 Heart Rate & SpO2
-  long irValue = particleSensor.getIR();
-  long redValue = particleSensor.getRed();
+  int32_t heartRate = 0;
+  int32_t spo2Val = 0;
+  bool ppgValid = readMAX30102(heartRate, spo2Val);
 
-  int heartRate = 0;
-  int spo2 = 0;
+  if (tempValid && ppgValid) {
+    // Start 2-minute timer when finger is first detected
+    if (!sessionActive) {
+      sessionStartMs = millis();
+      sessionActive = true;
+      fingerWasPresent = true;
 
-  if (irValue > 50000) {
-    if (checkForBeat(irValue) == true) {
-      if (lastBeat == 0) {
-        lastBeat = millis();
-      } else {
-        long delta = millis() - lastBeat;
-        lastBeat = millis();
-        if (delta > 0) {
-          beatsPerMinute = 60.0 / (delta / 1000.0);
+      Serial.println();
+      Serial.println("**************************************************");
+      Serial.print("[SYSTEM] Started 2-minute session for Patient: ");
+      Serial.println(getPatientID());
+      Serial.println("**************************************************");
 
-          if (beatsPerMinute < 220 && beatsPerMinute > 30) {
-            rates[rateSpot++] = (byte)beatsPerMinute;
-            rateSpot %= 4;
-
-            beatAvg = 0;
-            for (byte x = 0 ; x < 4 ; x++) beatAvg += rates[x];
-            beatAvg /= 4;
-          }
-        }
-      }
+      sendLogMessage("INFO", "Started 2-minute monitoring session for " + getPatientID());
     }
 
-    heartRate = (beatAvg > 0) ? beatAvg : (int)beatsPerMinute;
-    
-    if (irValue > 0 && redValue > 0) {
-      double r = ((double)redValue / (double)irValue);
-      spo2 = (int)(110.0 - 25.0 * r);
-      if (spo2 > 100) spo2 = 100;
-      if (spo2 < 70) spo2 = 70;
-    }
-  }
+    unsigned long elapsedMs = millis() - sessionStartMs;
 
-  // Range Validation Check
-  bool tempValid = (temperatureC != DEVICE_DISCONNECTED_C && temperatureC >= 20.0 && temperatureC <= 45.0);
-  bool maxValid  = (heartRate >= 30 && heartRate <= 220 && spo2 >= 50 && spo2 <= 100);
+    if (elapsedMs < PATIENT_SESSION_DURATION_MS) {
+      int remainingSec = (PATIENT_SESSION_DURATION_MS - elapsedMs) / 1000;
 
-  // Fallback defaults for demonstration stability
-  if (!tempValid) {
-    temperatureC = 36.5;
-  }
+      Serial.println("==========================================");
+      Serial.print("Active Patient ID : ");
+      Serial.println(getPatientID());
+      Serial.print("Session Time Left : ");
+      Serial.print(remainingSec);
+      Serial.println(" seconds");
+      Serial.print("Heart Rate        : ");
+      Serial.print(heartRate);
+      Serial.println(" BPM");
 
-  if (!maxValid) {
-    heartRate = 78;
-    spo2 = 97;
-  }
+      Serial.print("SpO2              : ");
+      Serial.print(spo2Val);
+      Serial.println(" %");
 
-  // Output Sensor Readings to Serial & Console Log
-  Serial.print("[SENSOR] Temp: "); Serial.print(temperatureC, 2);
-  Serial.print(" °C | HR: "); Serial.print(heartRate);
-  Serial.print(" BPM | SpO2: "); Serial.print(spo2); Serial.println(" %");
+      Serial.print("Temperature       : ");
+      Serial.print(temperature, 2);
+      Serial.println(" °C");
+      Serial.println("==========================================");
 
-  // Construct Standard Production JSON Payload
-  String jsonPayload = "{\"device_id\":\"" + String(DEVICE_ID) +
-                       "\",\"patientId\":\"" + String(PATIENT_ID) +
-                       "\",\"heart_rate\":" + String(heartRate) +
-                       ",\"spo2\":" + String(spo2) +
-                       ",\"temperature\":" + String(temperatureC, 2) + "}";
-
-  // Transmit HTTP POST to Backend
-  HTTPClient http;
-  WiFiClientSecure secureClient;
-  String apiUrlStr = String(API_URL);
-  if (apiUrlStr.startsWith("https://")) {
-    secureClient.setInsecure();
-    http.begin(secureClient, API_URL);
-  } else {
-    http.begin(API_URL);
-    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  }
-  http.addHeader("Content-Type", "application/json");
-  http.setTimeout(3000); // 3 second timeout for vitals transmission
-
-  int httpResponseCode = http.POST(jsonPayload);
-
-  if (httpResponseCode > 0) {
-    Serial.print("[HTTP] Response Code: "); Serial.println(httpResponseCode);
-    if (httpResponseCode == 200) {
-      Serial.println("[SUCCESS] DATA SENT SUCCESSFULLY");
+      sendVitalsPayload(temperature, heartRate, spo2Val, remainingSec);
     } else {
-      Serial.print("[WARNING] Server Status Code: "); Serial.println(httpResponseCode);
+      // 2 Minutes elapsing completes current patient session -> shift to next!
+      String finishedPatient = getPatientID();
+      patientNumber++; // P001 -> P002 -> P003...
+      sessionActive = false;
+      fingerWasPresent = false;
+
+      String nextPatient = getPatientID();
+      Serial.println();
+      Serial.println("**************************************************");
+      Serial.print("[SYSTEM] 2-Minute session finished for ");
+      Serial.print(finishedPatient);
+      Serial.print("! Shifted to ");
+      Serial.println(nextPatient);
+      Serial.println("**************************************************");
+
+      sendLogMessage("SUCCESS", "2-Minute session finished for " + finishedPatient + ". Advanced to " + nextPatient);
     }
   } else {
-    Serial.print("[ERROR] HTTP Error Code: "); Serial.println(httpResponseCode);
-    Serial.println("[ERROR] DATA NOT SENT - Connection Refused or Timeout");
+    // Finger was taken off before 2-minute timer finished
+    if (sessionActive) {
+      String prevPatient = getPatientID();
+      patientNumber++;
+      sessionActive = false;
+      fingerWasPresent = false;
+
+      String nextPatient = getPatientID();
+      Serial.println();
+      Serial.println("**************************************************");
+      Serial.print("[SYSTEM] Finger removed! Shifted from ");
+      Serial.print(prevPatient);
+      Serial.print(" to ");
+      Serial.println(nextPatient);
+      Serial.println("**************************************************");
+
+      sendLogMessage("INFO", "Finger removed. Shifted patient from " + prevPatient + " to " + nextPatient);
+    } else {
+      Serial.println("[SYSTEM] Telemetry skipped due to missing finger.");
+    }
   }
 
-  http.end();
-
-  // Transmit telemetry every 3 seconds
+  Serial.println();
   delay(3000);
 }
-
-

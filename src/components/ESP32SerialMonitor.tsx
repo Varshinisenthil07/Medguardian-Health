@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useVitals } from '../context/VitalsContext';
 import { LogLevel, DeviceLog } from '../types';
+import { postTestVital } from '../services/api';
 import {
   Terminal,
   Play,
@@ -15,7 +16,8 @@ import {
   AlertTriangle,
   ShieldAlert,
   Server,
-  Activity
+  Activity,
+  Usb
 } from 'lucide-react';
 
 interface ESP32SerialMonitorProps {
@@ -28,15 +30,119 @@ export const ESP32SerialMonitor: React.FC<ESP32SerialMonitorProps> = ({ compact 
   const [autoScroll, setAutoScroll] = useState<boolean>(true);
   const [isPaused, setIsPaused] = useState<boolean>(false);
   const [pausedLogs, setPausedLogs] = useState<DeviceLog[]>([]);
-
+  
+  // Direct USB Serial Connection State (Web Serial API)
+  const [usbConnected, setUsbConnected] = useState<boolean>(false);
+  const [usbLogs, setUsbLogs] = useState<DeviceLog[]>([]);
+  const portRef = useRef<any>(null);
   const terminalEndRef = useRef<HTMLDivElement | null>(null);
 
-  // If paused, keep frozen snapshot of logs; otherwise display latest deviceLogs
+  // Merge SSE / Wi-Fi logs and USB Direct Cable Serial logs
+  const combinedLogs = [...deviceLogs, ...usbLogs].sort(
+    (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+  );
+
+  // If paused, keep frozen snapshot of logs; otherwise display latest logs
   useEffect(() => {
     if (!isPaused) {
-      setPausedLogs(deviceLogs);
+      setPausedLogs(combinedLogs);
     }
-  }, [deviceLogs, isPaused]);
+  }, [deviceLogs, usbLogs, isPaused]);
+
+  // Handle Web Serial API (Direct USB Cable Serial Connection at 115200 Baud)
+  const handleToggleUsbSerial = async () => {
+    if (!('serial' in navigator)) {
+      alert('Web Serial API is not supported in this browser. Please use Google Chrome, Microsoft Edge, or Opera to connect your ESP32 via USB cable.');
+      return;
+    }
+
+    if (usbConnected && portRef.current) {
+      try {
+        await portRef.current.close();
+      } catch (e) {
+        // Ignore close errors
+      }
+      portRef.current = null;
+      setUsbConnected(false);
+      return;
+    }
+
+    try {
+      const port = await (navigator as any).serial.requestPort();
+      await port.open({ baudRate: 115200 });
+      portRef.current = port;
+      setUsbConnected(true);
+
+      const textDecoder = new TextDecoderStream();
+      port.readable.pipeTo(textDecoder.writable);
+      const inputStream = textDecoder.readable;
+      const reader = inputStream.getReader();
+
+      let lineBuffer = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) {
+          reader.releaseLock();
+          break;
+        }
+        if (value) {
+          lineBuffer += value;
+          const lines = lineBuffer.split('\n');
+          lineBuffer = lines.pop() || '';
+
+          for (const line of lines) {
+            const rawStr = line.trim();
+            if (rawStr.length > 0) {
+              let level: LogLevel = 'INFO';
+              if (rawStr.includes('[SENSOR]')) level = 'SENSOR';
+              else if (rawStr.includes('[NETWORK]')) level = 'NETWORK';
+              else if (rawStr.includes('[HTTP]')) level = 'HTTP';
+              else if (rawStr.includes('[SUCCESS]')) level = 'SUCCESS';
+              else if (rawStr.includes('[WARNING]')) level = 'WARNING';
+              else if (rawStr.includes('[ERROR]')) level = 'ERROR';
+
+              const logItem: DeviceLog = {
+                id: `usb-log-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+                deviceId: 'ESP32-USB-COM',
+                patientId: 'P001',
+                level,
+                message: rawStr,
+                timestamp: new Date().toISOString(),
+                source: 'ESP32 REAL HARDWARE'
+              };
+
+              setUsbLogs(prev => [...prev.slice(-199), logItem]);
+
+              // Automatically parse temperature / heart rate / spo2 from serial output if present
+              // Example line: [SENSOR] Temp: 36.60 °C | HR: 74 BPM | SpO2: 98 %
+              const hrMatch = rawStr.match(/HR:\s*(\d+)/i);
+              const spo2Match = rawStr.match(/SpO2:\s*(\d+)/i);
+              const tempMatch = rawStr.match(/Temp:\s*([\d.]+)/i);
+
+              if (hrMatch || spo2Match || tempMatch) {
+                const hrVal = hrMatch ? parseInt(hrMatch[1], 10) : 74;
+                const spo2Val = spo2Match ? parseInt(spo2Match[1], 10) : 98;
+                const tempVal = tempMatch ? parseFloat(tempMatch[1]) : 36.6;
+
+                if (hrVal > 0 && spo2Val > 0 && tempVal > 0) {
+                  postTestVital({
+                    device_id: 'esp32-vital-01',
+                    patientId: 'P001',
+                    heart_rate: hrVal,
+                    spo2: spo2Val,
+                    temperature: tempVal
+                  }).catch(() => {});
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch (err: any) {
+      console.warn('[Web Serial] Port selection cancelled or connection error:', err);
+      setUsbConnected(false);
+    }
+  };
 
   // Auto-scroll logic
   useEffect(() => {
@@ -143,6 +249,13 @@ export const ESP32SerialMonitor: React.FC<ESP32SerialMonitorProps> = ({ compact 
 
         {/* Status Indicator & Counter */}
         <div className="flex items-center gap-3 text-xs">
+          {usbConnected && (
+            <div className="flex items-center gap-1.5 bg-emerald-950 px-2.5 py-1 rounded-lg border border-emerald-500/60 text-emerald-300">
+              <Usb className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
+              <span className="text-[11px] font-extrabold uppercase">USB CABLE LIVE (115200)</span>
+            </div>
+          )}
+
           <div className="flex items-center gap-1.5 bg-[#131e3a] px-2.5 py-1 rounded-lg border border-[#1f2e56]">
             <span className="relative flex h-2 w-2">
               <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
@@ -153,7 +266,7 @@ export const ESP32SerialMonitor: React.FC<ESP32SerialMonitorProps> = ({ compact 
               }`}></span>
             </span>
             <span className="text-[11px] font-bold text-slate-200">
-              {isHardware ? (sseConnected ? 'CONNECTED' : 'RECONNECTING') : 'SIMULATION STREAM'}
+              {isHardware ? (sseConnected ? 'WI-FI ONLINE' : 'WI-FI RECONNECTING') : 'SIMULATION STREAM'}
             </span>
           </div>
 
@@ -164,6 +277,20 @@ export const ESP32SerialMonitor: React.FC<ESP32SerialMonitorProps> = ({ compact 
 
         {/* Toolbar Controls */}
         <div className="flex items-center gap-1.5">
+          {/* USB Serial Connection Button */}
+          <button
+            onClick={handleToggleUsbSerial}
+            className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold border transition-all flex items-center gap-1.5 ${
+              usbConnected
+                ? 'bg-emerald-600 text-white border-emerald-400 shadow-md shadow-emerald-950'
+                : 'bg-cyan-950 text-cyan-300 border-cyan-700 hover:bg-cyan-900 hover:text-white'
+            }`}
+            title="Connect directly to ESP32 USB Cable COM Port using Web Serial API"
+          >
+            <Usb className="w-3.5 h-3.5" />
+            {usbConnected ? 'Disconnect USB' : 'Connect USB Serial'}
+          </button>
+
           {/* Auto Scroll Toggle */}
           <button
             onClick={() => setAutoScroll(!autoScroll)}

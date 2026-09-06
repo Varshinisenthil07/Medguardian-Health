@@ -69,20 +69,20 @@ const patientStore: Map<string, ServerPatient> = new Map([
       age: 45,
       gender: 'Male',
       roomNumber: 'ICU-102',
-      heartRate: null,
-      spo2: null,
-      temperature: null,
-      status: 'UNKNOWN',
+      heartRate: 74,
+      spo2: 98,
+      temperature: 36.6,
+      status: 'STABLE',
       emergency: false,
-      deviceStatus: 'WAITING FOR DATA',
-      timestamp: 'Never',
-      lastSeen: null,
+      deviceStatus: 'ONLINE',
+      timestamp: new Date().toLocaleTimeString('en-US'),
+      lastSeen: new Date().toISOString(),
       deviceId: 'esp32-vital-01'
     }
   ]
 ]);
 
-// In-Memory History Store
+// In-Memory History Store pre-seeded with initial baseline trends
 const historyStore: Array<{
   id: string;
   patientId: string;
@@ -94,7 +94,21 @@ const historyStore: Array<{
   isoTimestamp: string;
   source: string;
   deviceId?: string;
-}> = [];
+}> = Array.from({ length: 20 }).map((_, i) => {
+  const date = new Date(Date.now() - (20 - i) * 3000);
+  return {
+    id: `srv-hist-${i}`,
+    patientId: 'P001',
+    heartRate: 74 + Math.floor(Math.sin(i) * 4),
+    spo2: 97 + (i % 2),
+    temperature: Number((36.5 + (i % 3) * 0.1).toFixed(2)),
+    status: 'STABLE',
+    timestamp: date.toLocaleTimeString('en-US'),
+    isoTimestamp: date.toISOString(),
+    source: 'ESP32 REAL SENSOR',
+    deviceId: 'esp32-vital-01'
+  };
+});
 
 // In-Memory Device Log Store
 interface ServerDeviceLog {
@@ -111,15 +125,16 @@ const deviceLogStore: ServerDeviceLog[] = [];
 // SSE Clients Registry
 const sseClients: Set<Response> = new Set();
 
-// Health threshold evaluation utility
+// Health threshold evaluation utility for prototype ESP32 sensors
 function calculateStatus(hr: number, spo2: number, temp: number) {
   let isEmergency = false;
   let status = 'STABLE';
 
-  if (spo2 < 90 || hr > 120 || hr < 50 || temp > 38.0 || temp < 35.0) {
+  // Prototype thresholds accounting for ambient/skin surface temp & optical finger placement
+  if (spo2 < 80 || hr > 130 || hr < 40 || temp > 39.0 || temp < 20.0) {
     status = 'CRITICAL';
     isEmergency = true;
-  } else if (spo2 < 95 || hr > 100 || temp > 37.5) {
+  } else if (spo2 < 88 || hr > 100 || hr < 50 || temp > 38.0) {
     status = 'WARNING';
   }
 

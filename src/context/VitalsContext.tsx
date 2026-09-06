@@ -65,7 +65,7 @@ export const VitalsProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   
   const [patients, setPatients] = useState<Patient[]>(INITIAL_PATIENTS);
   const [selectedPatientId, setSelectedPatientId] = useState<string>('P001');
-  const [history, setHistory] = useState<VitalHistoryEntry[]>([]);
+  const [history, setHistory] = useState<VitalHistoryEntry[]>(INITIAL_MOCK_HISTORY);
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
   const [deviceLogs, setDeviceLogs] = useState<DeviceLog[]>([]);
   
@@ -124,6 +124,7 @@ export const VitalsProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
     if (!isSim && hr !== null) {
       setLastHardwarePayloadReceived(new Date(isoStr));
+      setSelectedPatientId(pId);
     }
 
     // Append to History if values exist
@@ -187,21 +188,6 @@ export const VitalsProvider: React.FC<{ children: ReactNode }> = ({ children }) 
           }
         })
         .catch(err => console.warn('[VitalsContext] Could not fetch initial device logs:', err));
-
-      setPatients(prev => prev.map(p => {
-        if (p.patientId === 'P001') {
-          return {
-            ...p,
-            heartRate: null,
-            spo2: null,
-            temperature: null,
-            status: 'UNKNOWN',
-            deviceStatus: 'WAITING FOR DATA',
-            timestamp: 'Waiting for ESP32...'
-          };
-        }
-        return p;
-      }));
     } else {
       vitalSimulator.start(
         (simData) => processIncomingVital(simData),

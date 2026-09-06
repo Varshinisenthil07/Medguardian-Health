@@ -6,16 +6,38 @@ import { ESP32SerialMonitor } from '../components/ESP32SerialMonitor';
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, Legend } from 'recharts';
 import { Cpu, Server, Radio, ShieldCheck, Activity, Bell, AlertTriangle, ChevronRight } from 'lucide-react';
 
+import { postTestVital } from '../services/api';
+
 export const DashboardView: React.FC = () => {
   const {
     selectedPatient,
     history,
     alerts,
     mode,
+    setMode,
     serverConnected,
     sseConnected,
     setActiveTab
   } = useVitals();
+
+  const handleSendTestVital = async () => {
+    const pId = selectedPatient?.patientId || 'P001';
+    const testHr = Math.floor(70 + Math.random() * 15);
+    const testSpo2 = Math.floor(96 + Math.random() * 4);
+    const testTemp = Number((36.4 + Math.random() * 0.8).toFixed(2));
+
+    try {
+      await postTestVital({
+        device_id: `esp32-vital-01`,
+        patientId: pId,
+        heart_rate: testHr,
+        spo2: testSpo2,
+        temperature: testTemp
+      });
+    } catch (err) {
+      console.warn('[Dashboard] Could not post test vital payload:', err);
+    }
+  };
 
   const isHardware = mode === 'hardware';
   const pHistory = history.filter(h => h.patientId === (selectedPatient?.patientId || 'P001'));
@@ -71,19 +93,29 @@ export const DashboardView: React.FC = () => {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Main Multi-Vital Real-Time Chart (2 Columns) */}
         <div className="lg:col-span-2 glass-panel rounded-2xl p-5 border border-[#1f2e56] space-y-4">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between flex-wrap gap-2">
             <div className="flex items-center gap-2">
               <Activity className="w-5 h-5 text-cyan-400" />
               <h3 className="text-sm font-extrabold text-white tracking-wide uppercase">
                 Real-Time Vital Multi-Trend Stream
               </h3>
             </div>
-            <button
-              onClick={() => setActiveTab('monitoring')}
-              className="text-xs font-semibold text-cyan-400 hover:text-cyan-300 flex items-center gap-1"
-            >
-              Full Screen Monitor <ChevronRight className="w-4 h-4" />
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleSendTestVital}
+                className="px-2.5 py-1 text-[11px] font-bold rounded-lg bg-cyan-950 border border-cyan-800 text-cyan-300 hover:bg-cyan-900 transition-colors flex items-center gap-1"
+                title="Send simulated ESP32 packet to /api/vitals"
+              >
+                <Radio className="w-3.5 h-3.5 text-cyan-400 animate-pulse" />
+                Simulate Reading
+              </button>
+              <button
+                onClick={() => setActiveTab('monitoring')}
+                className="text-xs font-semibold text-cyan-400 hover:text-cyan-300 flex items-center gap-1 ml-2"
+              >
+                Full Screen Monitor <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
           </div>
 
           <div className="h-72 w-full pt-2">

@@ -7,14 +7,14 @@ export const INITIAL_PATIENTS: Patient[] = [
     age: 45,
     gender: 'Male',
     roomNumber: 'ICU-102',
-    heartRate: null,
-    spo2: null,
-    temperature: null,
-    status: 'UNKNOWN',
+    heartRate: 74,
+    spo2: 98,
+    temperature: 36.6,
+    status: 'STABLE',
     emergency: false,
-    deviceStatus: 'WAITING FOR DATA',
-    timestamp: 'Never',
-    lastSeen: null
+    deviceStatus: 'ONLINE',
+    timestamp: new Date().toLocaleTimeString(),
+    lastSeen: new Date().toISOString()
   },
   {
     patientId: 'P002',
