@@ -388,11 +388,13 @@ bool sendVitalsPayload(float tempC, int32_t hr, int32_t oxygen, int remainingSec
 // CRITICAL HARDWARE ALARM HELPER (LED + BUZZER + MUTE BUTTON)
 // =====================================================================================
 void checkAndTriggerHardwareAlarm(float tempC, int32_t hr, int32_t spo2) {
-  // Check if silence button on GPIO 15 is pressed (LOW when pressed)
+  // Check if silence button on GPIO 27 is pressed (LOW when pressed with debounce)
   if (digitalRead(BUTTON_PIN) == LOW) {
-    alarmMuted = true;
-    Serial.println("[HARDWARE ALARM] Silence Button Pressed! Muting alarm buzzer.");
-    delay(150);
+    delay(20);
+    if (digitalRead(BUTTON_PIN) == LOW) {
+      alarmMuted = true;
+      Serial.println("[HARDWARE ALARM] Silence Button Pressed! Muting alarm buzzer.");
+    }
   }
 
   // Evaluate critical status (SpO2 < 90%, HR < 50 or > 120, Temp > 38.0°C)
@@ -400,22 +402,24 @@ void checkAndTriggerHardwareAlarm(float tempC, int32_t hr, int32_t spo2) {
   if (spo2 < 90 || hr < 50 || hr > 120 || tempC > 38.0f) {
     isCritical = true;
   } else {
-    alarmMuted = false; // Reset mute flag when vitals recover
+    alarmMuted = false; // Reset mute flag when vitals recover to normal
   }
 
   if (isCritical) {
     Serial.println("[HARDWARE ALARM] *** CRITICAL VITALS DETECTED *** Glowing LED & Beeping Buzzer!");
-    digitalWrite(LED_PIN, HIGH); // Glow Alert Red LED
+    digitalWrite(LED_PIN, HIGH); // Glow Alert Red LED (GPIO 26)
 
     if (!alarmMuted) {
-      digitalWrite(BUZZER_PIN, HIGH); // Sound Buzzer
-      delay(200);
-      digitalWrite(BUZZER_PIN, LOW);
+      // Generate 2.5kHz audio tone (works for BOTH active and passive buzzers on GPIO 25)
+      tone(BUZZER_PIN, 2500, 400);
+      digitalWrite(BUZZER_PIN, HIGH);
     } else {
+      noTone(BUZZER_PIN);
       digitalWrite(BUZZER_PIN, LOW);
     }
   } else {
     digitalWrite(LED_PIN, LOW);
+    noTone(BUZZER_PIN);
     digitalWrite(BUZZER_PIN, LOW);
   }
 }
